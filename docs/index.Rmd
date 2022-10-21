@@ -1,0 +1,369 @@
+---
+title: "Humanized Sterol Biosynthesis (HsS) Growth Analysis"
+author: "Michelle Vandeloo"
+date: "07/04/2022"
+output: html_document
+---
+
+This document describes the analysis pipeline for the growth curve analysis used in Masters thesis. The required packages are: tidyverse, viridis, matrixStats, pracma, ggplot2, gridExtra, and lemon. 
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+# install.packages("tidyverse")
+library(tidyverse)
+# install.packages("viridis")
+library(viridis) 
+#install.packages("matrixStats")                           
+library(matrixStats) 
+#install.packages("ggpubr")
+library(pracma)
+#install.packages("ggplot2") 
+library(ggplot2)
+#install.packages("gridExtra")
+library(gridExtra)
+#install.packages("lemon")
+library(lemon)
+
+raw_path <- "C:/Users/mvand/OneDrive/Documents/School & Work/Kachroo Lab/Growth curves"
+data_path <- "C:/Users/mvand/OneDrive/Documents/School & Work/Kachroo Lab/Growth curves/data"
+
+```
+
+Data from the Tecan spectrometer is read in (data is expressed with a first column of time points as a fraction of days, followed by the OD reads for each experiment in each column (all experiments done in duplicate or triplicate - outliers have been removed)) and tidied.
+
+```{r replicate data}
+gc_rep <- read.csv(paste(raw_path, "/gc_replicates.csv", sep = ""), header = TRUE, fileEncoding = 'UTF-8-BOM')
+
+gc_long <- gc_rep %>%
+  pivot_longer(c(2:ncol(.)), names_to = "strain", values_to = "OD600") %>%
+  filter(!str_detect(strain, "het"))
+
+gc_org <- gc_long %>%
+  separate(strain, into = c("strain", "replicate")) %>%
+  pivot_wider(names_from = replicate, values_from = OD600)
+
+gc_names = c("time", "strain", "rep_1", "rep_2", "rep_3")
+
+names(gc_org) <- gc_names
+```
+
+Mean and standard error are calculated for every experimental read. (Names indicate which gene was humanized in that strain, except for the names RSHIP (HsS5.1), RSHIP4 (HsS6.1), RSHIP4N (HsS7.1), RSHIP4NT (HsS8.1), RSHIP4NTC (HsS9.2), RSHIP4NTK (HsS9.1).)
+
+```{r stats}
+gc_stat <- gc_org %>%
+  mutate(mean = rowMeans(.[c("rep_1", "rep_2", "rep_3")], na.rm = TRUE), 
+         error = rowSds(as.matrix(.[c("rep_1", "rep_2", "rep_3")]), na.rm = TRUE)/sqrt(length(.[c("rep_1", "rep_2", "rep_3")]))) %>%
+  filter(strain %in% c("cyp51a1", "hmgcr", "lbr", "mvk", "nsdhl", "pmvk", "rship", "rship4", "rship4n", "rship4nt", "rship4ntc", "rship4ntk", "sc4mol", "sqle", "wt"))
+```
+
+To get a quantitative measure of total growth, we calculate the area under each curve, and map those to a histogram, with standard deviation between replicates.
+
+```{r testing auc}
+AUCdata <- gc_long %>%
+  select(strain, time, OD600) 
+
+AUC <- function(dat) {
+  strains <- pull(unique(dat[,1]))
+  auc <- c()
+  for (i in 1:length(strains)) {
+    temp <- filter(dat, strain %in% strains[i])
+    auc <- c(auc, trapz(pull(temp, 2), pull(temp, 3)))
+  }
+  newdat <- data.frame(strains, auc)
+  newdat <- mutate(newdat, prop = auc/124.73264)
+  return <- newdat
+}
+
+aucs <- AUC(AUCdata) %>%
+   filter(!str_detect(strains, "rship")) %>%
+  separate(strains, into = c("strain", "replicate")) %>%
+  select(strain, replicate, prop) %>%
+  pivot_wider(names_from = replicate, values_from = prop) 
+
+aucs_names = c("strain", "rep_1", "rep_2", "rep_3")
+
+names(aucs) <- aucs_names
+
+aucs_reps <- aucs %>%
+  mutate(mean = rowMeans(.[c("rep_1", "rep_2", "rep_3")], na.rm = TRUE), 
+         error = rowSds(as.matrix(.[c("rep_1", "rep_2", "rep_3")]), na.rm = TRUE)/sqrt(length(.[c("rep_1", "rep_2", "rep_3")])),
+         sd = rowSds(as.matrix(.[c("rep_1", "rep_2", "rep_3")]), na.rm = TRUE))
+
+aucs_reps$strain <- as.character(aucs_reps$strain)
+aucs_reps$strain <- factor(aucs_reps$strain, levels = c("wt", "hmgcr", "mvk", "pmvk", "sqle", "cyp51a1", "lbr", "sc4mol", "nsdhl"))
+
+auc_gg <- aucs_reps %>%
+  select(strain, mean, error) %>%
+  ggplot() +
+  geom_bar(mapping = aes(x = strain, y = mean, fill = factor(strain)), stat = "identity") +
+  geom_errorbar(aes(x = strain, 
+                    ymin = mean - error, 
+                    ymax = mean + error), 
+                width=.2,
+                position=position_dodge(.9)) +
+  scale_x_discrete(breaks = c("wt", "hmgcr", "mvk", "pmvk", "sqle", "cyp51a1", "lbr", "sc4mol", "nsdhl"),
+                   labels = c("WT", "HsS1.1", "HsS1.2", "HsS1.3", "HsS1.4", "HsS1.5", "HsS1.6", "HsS1.7", "HsS1.8")) +
+  xlab("") +
+  ylab("AUC compared to WT") +
+  theme(panel.background = element_blank()) + 
+  scale_fill_viridis_d("Strain", labels = c("WT", "HsS1.1 (HMGCR)", "HsS1.2 (MVK)", "HsS1.3 (PMVK)", "HsS1.4 (SQLE)", "HsS1.5 (CYP51A1)", "HsS1.6 (LBR)", "HsS1.7 (SC4MOL)", "HsS1.8 (NSDHL)"))
+
+# print(ggplot_build(auc_gg)$data[[1]][,1])
+# colours used: 
+# lbr = "#5DC863FF" 
+# hmgcr = "#472D7BFF" 
+# sqle = "#21908CFF" 
+# sc4mol = "#AADC32FF" 
+# pmvk = "#2C728EFF" 
+# nsdhl = "#FDE725FF" 
+# cyp51a1 = "#27AD81FF" 
+# wt = "#440154FF" 
+# mvk = "#3B528BFF"
+```
+
+For each of the single-gene humanized strains (HsS1.X), growth is plotted, matching colour values to the previous figure. Every strain is compared to the wild-type as a reference.
+
+```{r graphs individual}
+hmgcr <- gc_stat %>%
+  filter(strain == "hmgcr" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  xlab("") +
+  ylab("OD600") +
+  ggtitle("HsS1.1") +
+  scale_colour_manual(values=c("#472D7BFF", "#440154FF"), aesthetics = c("colour", "fill"))
+
+mvk <- gc_stat %>%
+  filter(strain == "mvk" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS1.2") +
+  scale_colour_manual(values=c("#3B528BFF", "#440154FF"), aesthetics = c("colour", "fill"))
+
+pmvk <- gc_stat %>%
+  filter(strain == "pmvk" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+    theme(panel.background = element_blank(), legend.position = "none") +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS1.3") +
+  scale_colour_manual(values=c("#2C728EFF" , "#440154FF"), aesthetics = c("colour", "fill"))
+
+sqle <- gc_stat %>%
+  filter(strain == "sqle" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS1.4") +
+    theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#21908CFF", "#440154FF"), aesthetics = c("colour", "fill"))
+
+cyp51a1 <- gc_stat %>%
+  filter(strain == "cyp51a1" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("Time") +
+  ylab("OD600") +
+  ggtitle("HsS1.5") +
+    theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#27AD81FF", "#440154FF"), aesthetics = c("colour", "fill"))
+
+lbr <- gc_stat %>%
+  filter(strain == "lbr" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS1.6") +
+    theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#5DC863FF", "#440154FF"), aesthetics = c("colour", "fill"))
+
+sc4mol <- gc_stat %>%
+  filter(strain == "sc4mol" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS1.7") +
+    theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#AADC32FF" , "#440154FF"), aesthetics = c("colour", "fill"))
+
+nsdhl <- gc_stat %>%
+  filter(strain == "nsdhl" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS1.8") +
+    theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#FDE725FF" , "#440154FF"), aesthetics = c("colour", "fill"))
+
+grid_arrange_shared_legend(auc_gg, gridExtra::arrangeGrob(hmgcr, mvk, pmvk, sqle, cyp51a1, lbr, sc4mol, nsdhl, ncol = 4, nrow = 2), ncol = 1, nrow = 2)
+```
+
+We repeat the above (AUC data and growth curves) for the multi-gene strains (HsS5.1-HsS9.2).
+
+```{r redoing above for multi strains}
+aucs_multi <- AUC(AUCdata) %>%
+  filter(str_detect(strains, "rship") | str_detect(strains, "wt")) %>%
+  separate(strains, into = c("strain", "replicate")) %>%
+  select(strain, replicate, prop) %>%
+  pivot_wider(names_from = replicate, values_from = prop) 
+
+names(aucs_multi) <- aucs_names
+
+aucs_reps_multi <- aucs_multi %>%
+  mutate(mean = rowMeans(.[c("rep_1", "rep_2", "rep_3")], na.rm = TRUE), 
+         error = rowSds(as.matrix(.[c("rep_1", "rep_2", "rep_3")]), na.rm = TRUE)/sqrt(length(.[c("rep_1", "rep_2", "rep_3")])),
+         sd = rowSds(as.matrix(.[c("rep_1", "rep_2", "rep_3")]), na.rm = TRUE))
+
+aucs_reps_multi$strain <- as.character(aucs_reps_multi$strain)
+aucs_reps_multi$strain <- factor(aucs_reps_multi$strain, levels = c("wt", "rship", "rship4", "rship4n", "rship4nt", "rship4ntk", "rship4ntc"))
+
+auc_gg_multi <- aucs_reps_multi %>%
+  select(strain, mean, error) %>%
+  ggplot() +
+  geom_bar(mapping = aes(x = strain, y = mean, fill = factor(strain)), stat = "identity") +
+  geom_errorbar(aes(x = strain, 
+                    ymin = mean - error, 
+                    ymax = mean + error), 
+                width=.2,
+                position=position_dodge(.9)) +
+  scale_x_discrete(breaks = c("wt", "rship", "rship4", "rship4n", "rship4nt", "rship4ntk", "rship4ntc"),
+                   labels = c("WT", "HsS5.1", "HsS6.1", "HsS7.1", "HsS8.1", "HsS9.1", "HsS9.2")) +
+  xlab("") +
+  ylab("AUC compared to WT") +
+  theme(panel.background = element_blank()) + 
+  scale_fill_viridis_d("Strain", labels = c("WT", "HsS5.1", "HsS6.1", "HsS7.1", "HsS8.1", "HsS9.1", "HsS9.2"), option = "plasma")
+
+print(ggplot_build(auc_gg_multi)$data[[1]][,1])
+
+# colours used:
+#   wt = "#0D0887FF", 
+# rship = "#5D01A6FF",
+# rship4 = "#9C179EFF",
+# rship4n = "#CC4678FF",
+# rship4nt = "#ED7953FF",
+# rship4ntk = "#FDB32FFF",
+# rship4ntc = "#F0F921FF"
+
+rship <- gc_stat %>%
+  filter(strain == "rship" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("OD600") +
+  ggtitle("HsS5.1") +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#5D01A6FF", "#0D0887FF"), aesthetics = c("colour", "fill"))
+
+rship4 <- gc_stat %>%
+  filter(strain == "rship4" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS6.1") +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#9C179EFF", "#0D0887FF"), aesthetics = c("colour", "fill"))
+
+rship4n <- gc_stat %>%
+  filter(strain == "rship4n" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS7.1") +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#CC4678FF", "#0D0887FF"), aesthetics = c("colour", "fill"))
+
+rship4nt <- gc_stat %>%
+  filter(strain == "rship4nt" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("OD600") +
+  ggtitle("HsS8.1") +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#ED7953FF", "#0D0887FF"), aesthetics = c("colour", "fill"))
+
+rship4ntk <- gc_stat %>%
+  filter(strain == "rship4ntk" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS9.1") +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#FDB32FFF", "#0D0887FF"), aesthetics = c("colour", "fill"))
+
+rship4ntc <- gc_stat %>%
+  filter(strain == "rship4ntc" | strain == "wt") %>%
+  ggplot(aes(x = time, y = mean)) +
+  geom_line(mapping = aes(colour=strain), size=3) +
+  geom_ribbon(aes(ymin = mean - error,
+                  ymax = mean + error, 
+                  fill = strain), alpha = 0.2) +
+  xlab("") +
+  ylab("") +
+  ggtitle("HsS9.2") +
+  theme(panel.background = element_blank(), legend.position = "none") +
+  scale_colour_manual(values=c("#F0F921FF", "#0D0887FF"), aesthetics = c("colour", "fill"))
+
+grid_arrange_shared_legend(auc_gg_multi, gridExtra::arrangeGrob(rship, rship4, rship4n, rship4nt, rship4ntk, rship4ntc, ncol = 3, nrow = 2), ncol = 1, nrow = 2)
+```
+
+Citations for packages used:
+
+```{r cit}
+print("Pracma: https://cran.r-project.org/web/packages/pracma/index.html")
+print("Lemon: https://cran.r-project.org/web/packages/lemon/lemon.pdf")
+
+```
